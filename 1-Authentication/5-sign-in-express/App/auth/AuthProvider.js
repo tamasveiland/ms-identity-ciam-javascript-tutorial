@@ -15,11 +15,19 @@ class AuthProvider {
         this.msalWorkforce = new msal.ConfidentialClientApplication(this.config.msalConfigWF);
     }
 
-    // getMsalInstanceExt(msalConfigExt) {
-    //     return new msal.ConfidentialClientApplication(msalConfigExt);
-    // }
-
     async loginExt(req, res, next, options = {}) {
+
+        await this.login(req, res, next, options, this.msalExternal, this.config.msalConfigExt, this.config.redirectUriExt);
+
+    }
+
+    async loginWF(req, res, next, options = {}) {
+
+        await this.login(req, res, next, options, this.msalWorkforce, this.config.msalConfigWF, this.config.redirectUriWF);
+
+    }
+
+    async login(req, res, next, options = {}, msalInstance, msalConfig, redirectUri) {
         // create a GUID for crsf
         req.session.csrfToken = this.cryptoProvider.createNewGuid();
 
@@ -32,6 +40,7 @@ class AuthProvider {
             JSON.stringify({
                 csrfToken: req.session.csrfToken,
                 redirectTo: '/',
+                successRedirect: options.successRedirect || '/',
             })
         );
 
@@ -42,7 +51,8 @@ class AuthProvider {
              * By default, MSAL Node will add OIDC scopes to the auth code url request. For more information, visit:
              * https://docs.microsoft.com/azure/active-directory/develop/v2-permissions-and-consent#openid-connect-scopes
              */
-            scopes: [],
+            scopes: options.scopes || [],
+            redirectUri: options.redirectUri,
         };
 
         const authCodeRequestParams = {
@@ -52,7 +62,8 @@ class AuthProvider {
              * By default, MSAL Node will add OIDC scopes to the auth code request. For more information, visit:
              * https://docs.microsoft.com/azure/active-directory/develop/v2-permissions-and-consent#openid-connect-scopes
              */
-            scopes: [],
+            scopes: options.scopes || [],
+            redirectUri: options.redirectUri,
         };
 
         /**
@@ -60,12 +71,16 @@ class AuthProvider {
          * make a request to the relevant endpoints to retrieve the metadata. This allows MSAL to avoid making
          * metadata discovery calls, thereby improving performance of token acquisition process.
          */
-        if (!this.config.msalConfigExt.auth.authorityMetadata) {
-            const authorityMetadata = await this.getAuthorityMetadataExt();
-            this.config.msalConfigExt.auth.authorityMetadata = JSON.stringify(authorityMetadata);
-        }
+        if (!msalConfig.auth.cloudDiscoveryMetadata || !msalConfig.auth.authorityMetadata) {
+    
+            const [cloudDiscoveryMetadata, authorityMetadata] = await Promise.all([
+                this.getCloudDiscoveryMetadataWF(msalConfig.auth.authority),
+                this.getAuthorityMetadataExt(msalConfig.auth.authority)
+            ]);
 
-        const msalInstance = this.msalExternal; // this.getMsalInstanceExt(this.config.msalConfigExt);
+            msalConfig.auth.cloudDiscoveryMetadata = JSON.stringify(cloudDiscoveryMetadata);
+            msalConfig.auth.authorityMetadata = JSON.stringify(authorityMetadata);        
+        }
 
         // trigger the first leg of auth code flow
         return this.redirectToAuthCodeUrl(
@@ -75,7 +90,7 @@ class AuthProvider {
             authCodeUrlRequestParams,
             authCodeRequestParams,
             msalInstance,
-            this.config.redirectUriExt
+            redirectUri
         );
     }
 
@@ -181,95 +196,10 @@ class AuthProvider {
     }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    /**
-     * Workforce tenant specific methods
-     */
-    async loginWF(req, res, next, options = {}) {
-
-        /**
-         * MSAL Node library allows you to pass your custom state as state parameter in the Request object.
-         * The state parameter can also be used to encode information of the app's state before redirect.
-         * You can pass the user's state in the app, such as the page or view they were on, as input to this parameter.
-         */
-        const state = this.cryptoProvider.base64Encode(
-            JSON.stringify({
-                successRedirect: options.successRedirect || '/',
-            })
-        );
-
-        const authCodeUrlRequestParams = {
-            state: state,
-
-            /**
-             * By default, MSAL Node will add OIDC scopes to the auth code url request. For more information, visit:
-             * https://docs.microsoft.com/azure/active-directory/develop/v2-permissions-and-consent#openid-connect-scopes
-             */
-            scopes: options.scopes || [],
-            redirectUri: options.redirectUri,
-        };
-
-        const authCodeRequestParams = {
-            state: state,
-
-            /**
-             * By default, MSAL Node will add OIDC scopes to the auth code request. For more information, visit:
-             * https://docs.microsoft.com/azure/active-directory/develop/v2-permissions-and-consent#openid-connect-scopes
-             */
-            scopes: options.scopes || [],
-            redirectUri: options.redirectUri,
-        };
-
-        /**
-         * If the current msal configuration does not have cloudDiscoveryMetadata or authorityMetadata, we will 
-         * make a request to the relevant endpoints to retrieve the metadata. This allows MSAL to avoid making 
-         * metadata discovery calls, thereby improving performance of token acquisition process. For more, see:
-         * https://github.com/AzureAD/microsoft-authentication-library-for-js/blob/dev/lib/msal-node/docs/performance.md
-         */
-        if (!this.config.msalConfigWF.auth.cloudDiscoveryMetadata || !this.config.msalConfigWF.auth.authorityMetadata) {
-
-            const [cloudDiscoveryMetadata, authorityMetadata] = await Promise.all([
-                this.getCloudDiscoveryMetadataWF(this.config.msalConfigWF.auth.authority),
-                this.getAuthorityMetadataWF(this.config.msalConfigWF.auth.authority)
-            ]);
-
-            this.config.msalConfigWF.auth.cloudDiscoveryMetadata = JSON.stringify(cloudDiscoveryMetadata);
-            this.config.msalConfigWF.auth.authorityMetadata = JSON.stringify(authorityMetadata);
-        }
-
-        const msalInstance = this.getMsalInstanceWF(this.config.msalConfigWF);
-
-        // trigger the first leg of auth code flow
-        return this.redirectToAuthCodeUrl(
-            req,
-            res,
-            next,
-            authCodeUrlRequestParams,
-            authCodeRequestParams,
-            msalInstance,
-            this.config.redirectUriWF
-        );
-
-    }
-
     acquireTokenWF(options = {}) {
         return async (req, res, next) => {
             try {
-                const msalInstance = this.getMsalInstanceWF(this.msalConfigWF);
+                const msalInstance = this.msalWorkforce;
 
                 /**
                  * If a token cache exists in the session, deserialize it and set it as the 
@@ -323,7 +253,7 @@ class AuthProvider {
         };
 
         try {
-            const msalInstance = this.getMsalInstanceWF(this.config.msalConfigWF);
+            const msalInstance = this.msalWorkforce;
 
             if (req.session.tokenCache) {
                 msalInstance.getTokenCache().deserialize(req.session.tokenCache);
@@ -358,70 +288,16 @@ class AuthProvider {
     }
 
     /**
-     * Instantiates a new MSAL ConfidentialClientApplication object
-     * @param msalConfig: MSAL Node Configuration object 
-     * @returns 
-     */
-    getMsalInstanceWF(msalConfig) {
-        return new msal.ConfidentialClientApplication(msalConfig);
-    }
-
-
-    /**
-     * Prepares the auth code request parameters and initiates the first leg of auth code flow
-     * @param req: Express request object
-     * @param res: Express response object
-     * @param next: Express next function
-     * @param authCodeUrlRequestParams: parameters for requesting an auth code url
-     * @param authCodeRequestParams: parameters for requesting tokens using auth code
-     */
-    // redirectToAuthCodeUrlWF(authCodeUrlRequestParams, authCodeRequestParams, msalInstance) {
-    //     return async (req, res, next) => {
-    //         // Generate PKCE Codes before starting the authorization flow
-    //         const { verifier, challenge } = await this.cryptoProvider.generatePkceCodes();
-
-    //         // Set generated PKCE codes and method as session vars
-    //         req.session.pkceCodes = {
-    //             challengeMethod: 'S256',
-    //             verifier: verifier,
-    //             challenge: challenge,
-    //         };
-
-    //         /**
-    //          * By manipulating the request objects below before each request, we can obtain
-    //          * auth artifacts with desired claims. For more information, visit:
-    //          * https://azuread.github.io/microsoft-authentication-library-for-js/ref/modules/_azure_msal_node.html#authorizationurlrequest
-    //          * https://azuread.github.io/microsoft-authentication-library-for-js/ref/modules/_azure_msal_node.html#authorizationcoderequest
-    //          **/
-    //         req.session.authCodeUrlRequest = {
-    //             ...authCodeUrlRequestParams,
-    //             redirectUri: this.config.redirectUriWF,
-    //             responseMode: msal.ResponseMode.FORM_POST, // recommended for confidential clients
-    //             codeChallenge: req.session.pkceCodes.challenge,
-    //             codeChallengeMethod: req.session.pkceCodes.challengeMethod,
-    //         };
-
-    //         req.session.authCodeRequest = {
-    //             ...authCodeRequestParams,
-    //             redirectUri: this.config.redirectUriWF,
-    //             code: '',
-    //         };
-
-    //         try {
-    //             const authCodeUrlResponse = await msalInstance.getAuthCodeUrl(req.session.authCodeUrlRequest);
-    //             res.redirect(authCodeUrlResponse);
-    //         } catch (error) {
-    //             next(error);
-    //         }
-    //     };
-    // }
-
-    /**
      * Retrieves cloud discovery metadata from the /discovery/instance endpoint
      * @returns 
      */
     async getCloudDiscoveryMetadataWF(authority) {
         const endpoint = 'https://login.microsoftonline.com/common/discovery/instance';
+
+        // if authority does not start with https://login.microsoftonline.com, simply avoid calling the endpoint as External ID does not support cloud discovery resolution
+        if (!authority.startsWith('https://login.microsoftonline.com')) {
+            return null;
+        }
 
         try {
             const response = await axios.get(endpoint, {
@@ -430,8 +306,8 @@ class AuthProvider {
                     'authorization_endpoint': `${authority}/oauth2/v2.0/authorize`
                 }
             });
-
             return await response.data;
+            
         } catch (error) {
             throw error;
         }
